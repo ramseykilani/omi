@@ -9,6 +9,7 @@ import 'package:omi/services/capture/capture_ingress_health.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/analytics/device_health_telemetry.dart';
 import 'package:omi/services/devices/models.dart';
+import 'package:omi/services/devices/fork_diagnostics_log.dart';
 
 /// Callback signature for characteristic value updates.
 typedef CharacteristicValueCallback = void Function(String serviceUuid, String characteristicUuid, Uint8List value);
@@ -154,6 +155,7 @@ class BleBridge implements BleFlutterApi {
   void onDeviceReady(String peripheralUuid, List<BleService> services) {
     final key = peripheralUuid.toUpperCase();
     _connectionRevisions[key] = (_connectionRevisions[key] ?? 0) + 1;
+    ForkDiagnosticsLog.instance.record('ble_device_ready', {'device': key, 'services': services.length});
     _recoveryDisconnects.remove(key);
     if (_ingressHealth[key]?.reason != CaptureIngressHealth.cccdRecoveryReason) _invalidateIngress(key);
     _deviceReadyCallbacks[key]?.call(services);
@@ -162,6 +164,7 @@ class BleBridge implements BleFlutterApi {
   @override
   Future<void> onPeripheralDisconnected(String peripheralUuid, String? error) async {
     final key = peripheralUuid.toUpperCase();
+    ForkDiagnosticsLog.instance.record('ble_disconnected', {'device': key, 'reason': error});
     final cccdRecovery = error == 'cccd_timeout' || error == 'cccd_timeout_exhausted';
     if (error == 'capture_recovery' || cccdRecovery) {
       _recoveryDisconnects.add(key);
