@@ -111,6 +111,14 @@ static void update_phy(struct bt_conn *conn);
 static void update_data_length(struct bt_conn *conn);
 static void update_mtu(struct bt_conn *conn);
 static void update_conn_params(struct bt_conn *conn);
+
+/* Re-requests of fast params per connection. The phone may deliberately pick a
+ * slower interval (Android power saving / app in background); re-requesting on
+ * every update ping-pongs with it, and update_conn_params() sleeps between
+ * retries inside the BT callback context. */
+#define CONN_PARAM_REREQUEST_MAX 3
+static uint8_t conn_param_rerequests;
+
 static void schedule_mtu_recheck(void);
 static void mtu_recheck_work_handler(struct k_work *work);
 static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_exchange_params *params);
@@ -654,6 +662,7 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
             supervision_timeout);
     LOG_INF("Initial MTU: %u", mtu);
     mtu_recheck_attempts = 0;
+    conn_param_rerequests = 0;
 
     // Request aggressive connection params for higher BLE sync throughput.
     update_conn_params(current_connection);
@@ -750,8 +759,12 @@ static void _le_param_updated(struct bt_conn *conn, uint16_t interval, uint16_t 
             latency,
             supervision_timeout);
 
-    if (interval > 24) {
-        LOG_WRN("Connection interval still high (%u units). Re-requesting preferred params.", interval);
+    if (interval > 24 && conn_param_rerequests < CONN_PARAM_REREQUEST_MAX) {
+        conn_param_rerequests++;
+        LOG_WRN("Connection interval still high (%u units). Re-requesting preferred params (%u/%u).",
+                interval,
+                conn_param_rerequests,
+                CONN_PARAM_REREQUEST_MAX);
         update_conn_params(conn);
     }
 }
