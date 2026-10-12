@@ -197,7 +197,7 @@ and is exposed on characteristic `19B10013` (notify). Raw millivolts are **not**
 Minor: `BATTERY_STATES_COUNT` is 16 but each table has 12 rows (the rest zero-fill). Harmless.
 
 ### 4.3 Shutdown, watchdog, BLE disconnect — and the drafts
-All drafts are formatted, but **none has been compiled or flashed**. The firmware CI run builds them on GitHub; check that it passed before trusting anything.
+All drafts **compile and link** in the full NCS 2.9.0 sysbuild. [CI run 38240782702](https://github.com/ramseykilani/omi/actions/runs/38240782702) produced an MCUboot-signed `dfu_application.zip` plus `merged.hex`/`merged_CPUNET.hex`, in artifact `omi-cv1-fork-firmware-drafts`. Building isn't testing, though: **none of them has run on a device.**
 
 | Draft commit | Change | Addresses |
 |---|---|---|
@@ -232,6 +232,6 @@ data, so **sync any offline recordings first**, and note your settings.
 ## 6. Still unverified (everything, really — but especially)
 - Every runtime behaviour of the app changes (no phone available). Unit and widget tests pass.
 - Whether sign-in works in a self-signed production build.
-- All firmware drafts: compile status depends on CI; no on-device testing at all.
+- All firmware drafts: they compile (CI), but nothing has run on hardware.
 - The BQ25101 CHG-at-termination behaviour as it applies to your unit, the divider units, and whether VBUS or CHG can wake the SoC.
 - Whether your symptoms are hardware (cell, pogo contacts, dock) rather than software. The test plan is designed to separate the two.
