@@ -15,6 +15,7 @@
 #include "haptic.h"
 #include "imu.h"
 #include "led.h"
+#include "lib/battery/battery.h"
 #include "mic.h"
 #include "speaker.h"
 #include "transport.h"
@@ -413,6 +414,16 @@ void turnoff_all()
         LOG_ERR("Could not configure usr_btn GPIO interrupt (%d)", rc);
         return;
     }
+
+#ifdef CONFIG_OMI_ENABLE_BATTERY
+    /* Also wake when a charger is attached, so a device that powered off on a
+     * flat battery boots, shows the charging LED and reports over BLE instead
+     * of charging silently in the dark. Best effort: the button still wakes. */
+    rc = battery_arm_charger_wakeup();
+    if (rc < 0) {
+        LOG_WRN("Could not arm charger wake-up (%d)", rc);
+    }
+#endif
     rc = watchdog_deinit();
     if (rc < 0) {
         LOG_ERR("Failed to deinitialize watchdog (%d)", rc);

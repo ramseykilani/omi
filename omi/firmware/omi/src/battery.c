@@ -389,6 +389,21 @@ int battery_enable_read()
     return 0;
 }
 
+int battery_arm_charger_wakeup(void)
+{
+    if (!device_is_ready(bat_chg_pin.port)) {
+        return -ENODEV;
+    }
+    battery_charging_state_read();
+    if (is_charging) {
+        return 0;
+    }
+    /* Level (not edge) interrupts set the GPIO SENSE field, which is what
+     * wakes the nRF5340 from System OFF. The pull-up from battery_init()
+     * keeps the line high while no charger is attached. */
+    return gpio_pin_interrupt_configure_dt(&bat_chg_pin, GPIO_INT_LEVEL_LOW);
+}
+
 int battery_init()
 {
     int err;

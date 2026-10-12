@@ -77,4 +77,16 @@ int battery_get_percentage(uint8_t *battery_percentage, uint16_t battery_millivo
  */
 int battery_init(void);
 
+/**
+ * @brief Arm the charger status pin as a System OFF wake source.
+ *
+ * Call right before sys_poweroff(). When the charger is not attached, plugging
+ * it in pulls CHG low and wakes the device so the firmware-driven charging LED
+ * shows. Does nothing (returns 0) while already charging, or the device would
+ * wake immediately and could not be turned off on the charger.
+ *
+ * @return 0 on success, negative errno otherwise.
+ */
+int battery_arm_charger_wakeup(void);
+
 #endif
