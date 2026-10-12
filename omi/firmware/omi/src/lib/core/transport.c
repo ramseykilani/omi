@@ -593,14 +593,24 @@ void broadcast_battery_level(struct k_work *work_item)
 static void _transport_connected(struct bt_conn *conn, uint8_t err)
 {
     struct bt_conn_info info = {0};
+
+    /* A non-zero err means the link was never established. The conn object
+     * must not be used and no disconnected callback follows, so taking a
+     * reference here leaked it and left is_connected stuck true until the
+     * next real connection overwrote current_connection. */
+    if (err) {
+        LOG_WRN("Connection attempt failed (hci err 0x%02x)", err);
+        return;
+    }
+
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_is_on = true;
 #endif
 
-    err = bt_conn_get_info(conn, &info);
-    if (err) {
-        LOG_ERR("Failed to get connection info (err %d)", err);
-        bt_conn_unref(conn);
+    int info_err = bt_conn_get_info(conn, &info);
+    if (info_err) {
+        /* We hold no reference yet; unref here would drop the stack's own. */
+        LOG_ERR("Failed to get connection info (err %d)", info_err);
         return;
     }
 
