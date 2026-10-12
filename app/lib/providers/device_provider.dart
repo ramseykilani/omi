@@ -35,6 +35,8 @@ import 'package:omi/utils/firmware_update_check_session.dart';
 import 'package:omi/utils/firmware_update_prompt_coordinator.dart';
 import 'package:omi/utils/analytics/device_health_telemetry.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:omi/services/devices/fork_diagnostics_log.dart';
+import 'package:omi/utils/firmware_update_verification.dart';
 import 'package:omi/utils/other/debouncer.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
 import 'package:omi/widgets/confirmation_dialog.dart';
@@ -42,6 +44,10 @@ import 'package:omi/ui/feedback/omi_dialogs.dart';
 
 typedef BleDiagnosticsLoader = Future<BleDeviceDiagnostics> Function(String deviceId);
 typedef FindDeviceRunner = Future<bool> Function(BtDevice device);
+
+/// Firmware notifies the battery level every 5 s while connected; a reading
+/// older than this means notifications stopped, so the UI marks it stale.
+const Duration batteryStaleAfter = Duration(minutes: 2);
 
 class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption {
   CaptureProvider? captureProvider;
@@ -93,6 +99,15 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   StreamSubscription? _bleChargingStatusListener;
   int batteryLevel = -1;
   bool isCharging = false;
+
+  /// When [batteryLevel] was last reported by the device. A level without a
+  /// recent timestamp is a last-known value, not a live reading.
+  DateTime? batteryUpdatedAt;
+
+  /// When the current/most recent device session became ready and when it
+  /// last dropped, so the UI can say "last seen" instead of a bare status.
+  DateTime? lastConnectedAt;
+  DateTime? lastDisconnectedAt;
   final _chargeStarts = ChargeStartTracker();
   late final FullyChargedAlertGate _fullyChargedAlert;
   int _lastNotifiedBatteryLevel = -1;
@@ -494,6 +509,13 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       batteryDeviceId,
       onBatteryLevelChange: (int value) {
         if (!_isCurrent(generation)) return;
+        final previousUpdate = batteryUpdatedAt;
+        batteryUpdatedAt = DateTime.now();
+        ForkDiagnosticsLog.instance.recordBattery(deviceId: batteryDeviceId, level: value, charging: isCharging);
+        // The page shows "updated N min ago"; refresh it when a sample ends a
+        // stale stretch even if the level itself did not change.
+        final endedStaleness =
+            previousUpdate == null || batteryUpdatedAt!.difference(previousUpdate) > batteryStaleAfter;
         if (batteryLevel != value) {
           batteryLevel = value;
           BatteryWidgetService().updateBatteryInfo(
@@ -524,8 +546,11 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
             : DateTime.now().difference(_lastBatteryNotifyTime!);
         final crossedLowBatteryThreshold =
             (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
-        final shouldNotify =
-            _lastNotifiedBatteryLevel == -1 || delta >= 5 || elapsed.inMinutes >= 15 || crossedLowBatteryThreshold;
+        final shouldNotify = _lastNotifiedBatteryLevel == -1 ||
+            delta >= 5 ||
+            elapsed.inMinutes >= 15 ||
+            crossedLowBatteryThreshold ||
+            endedStaleness;
         if (shouldNotify) {
           _lastNotifiedBatteryLevel = value;
           _lastBatteryNotifyTime = DateTime.now();
@@ -562,6 +587,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       // An initial read made by a sync wake is observation, not a charge-start event.
       if (chargeStarted && allowInitialResume) captureProvider?.onChargingStarted();
       final wasCharging = isCharging;
+      ForkDiagnosticsLog.instance
+          .record('charging_status', {'device': connectedDevice?.id, 'charging': currentStatus, 'source': 'read'});
       if (isCharging != currentStatus) {
         isCharging = currentStatus;
         notifyListeners();
@@ -582,6 +609,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
         final chargeStarted = _chargeStarts.observe(connectedDevice!.id, charging);
         if (chargeStarted && allowResume) captureProvider?.onChargingStarted();
         final wasCharging = isCharging;
+        ForkDiagnosticsLog.instance
+            .record('charging_status', {'device': connectedDevice?.id, 'charging': charging, 'source': 'notify'});
         if (isCharging != charging) {
           isCharging = charging;
           BatteryWidgetService().updateChargingState(charging);
@@ -836,6 +865,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     // Link loss is not an unplug. Keep this device's alert; another device does not inherit it.
     if (disconnectedDeviceId != null) _fullyChargedAlert.onLinkLost(disconnectedDeviceId);
     isCharging = false;
+    lastDisconnectedAt = DateTime.now();
+    ForkDiagnosticsLog.instance.record('device_disconnected', {
+      'device': disconnectedDeviceId,
+      'last_battery': batteryLevel,
+      'battery_age_s': batteryUpdatedAt == null ? null : lastDisconnectedAt!.difference(batteryUpdatedAt!).inSeconds,
+    });
     BatteryWidgetService().updateChargingState(false);
     unawaited(setConnectedDevice(null));
     unawaited(setisDeviceStorageSupport());
@@ -963,6 +998,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     if (!_isCurrent(generation)) return;
     if (currentLevel != -1) {
       batteryLevel = currentLevel;
+      batteryUpdatedAt = DateTime.now();
       BatteryWidgetService().updateBatteryInfo(
         deviceName: device.name,
         batteryLevel: currentLevel,
@@ -987,6 +1023,17 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     await getDeviceInfo();
     if (!_isCurrent(generation)) return;
     SharedPreferencesUtil().deviceName = device.name;
+    lastConnectedAt = DateTime.now();
+    final connectedFirmware = (pairedDevice ?? device).firmwareRevision;
+    ForkDiagnosticsLog.instance.record('device_connected', {
+      'device': device.id,
+      'firmware': connectedFirmware,
+      'hardware': (pairedDevice ?? device).hardwareRevision,
+      'model': (pairedDevice ?? device).modelNumber,
+      'initial_battery': currentLevel,
+      'charging': isCharging,
+    });
+    unawaited(FirmwareUpdateVerification.verifyAfterReconnect(deviceId: device.id, firmware: connectedFirmware));
 
     // getDeviceInfo() may have reclassified the discovery object — an Omi-typed
     // Glass unit becomes DeviceType.openglass once hasImageStream is read. Push

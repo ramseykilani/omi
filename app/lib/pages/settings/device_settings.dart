@@ -521,7 +521,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               SharedPreferencesUtil().autoSyncOfflineRecordings = value;
             },
           ),
-        if (provider.isConnected && diagnosticsId != null)
+        // Diagnostics read native history; they matter most while disconnected.
+        if (diagnosticsId != null)
           OmiSettingsRow(
             leading: const FaIcon(FontAwesomeIcons.stethoscope),
             title: l10n.diagnostics,
@@ -577,14 +578,30 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         children: [
           DevicePageHeader(pairedDevice: paired, connectedDevice: connected),
           const SizedBox(height: OmiSpacing.xl),
-          if (connected != null && provider.batteryLevel > 0) ...[
-            DeviceBatteryGroup(batteryLevel: provider.batteryLevel, isCharging: provider.isCharging),
+          // -1 is "never read"; 0% is a real (critical) reading and must show.
+          if ((connected != null || paired != null) && provider.batteryLevel >= 0) ...[
+            PeriodicRebuild(
+              builder: (context) {
+                // Read, not watch: battery samples update the timestamp without notifying.
+                final live = context.read<DeviceProvider>();
+                return DeviceBatteryGroup(
+                  batteryLevel: live.batteryLevel,
+                  isCharging: live.isCharging,
+                  updatedAt: live.batteryUpdatedAt,
+                  isConnected: live.isConnected,
+                  staleAfter: batteryStaleAfter,
+                );
+              },
+            ),
             gap,
           ],
           if (provider.isConnected)
             _customizationGroup(paired ?? connected, provider)
           else
-            const DeviceDisconnectedCard(),
+            DeviceDisconnectedCard(
+              lastConnectedAt: provider.lastConnectedAt,
+              lastDisconnectedAt: provider.lastDisconnectedAt,
+            ),
           gap,
           _deviceGroup(provider),
           gap,

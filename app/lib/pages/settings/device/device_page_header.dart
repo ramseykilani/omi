@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -74,11 +76,76 @@ class DevicePageHeader extends StatelessWidget {
 }
 
 /// The battery row: level (or "Charging") with a level-coloured icon.
+/// "just now" / "5 min ago" / "3 h ago" / "2 d ago" for freshness labels.
+/// Fork-only diagnostic copy; English only.
+String formatAgo(DateTime at, {DateTime? now}) {
+  final age = (now ?? DateTime.now()).difference(at);
+  if (age.inSeconds < 60) return 'just now';
+  if (age.inMinutes < 60) return '${age.inMinutes} min ago';
+  if (age.inHours < 48) return '${age.inHours} h ago';
+  return '${age.inDays} d ago';
+}
+
+/// Rebuilds [builder] every [interval] so relative times ("2 min ago") and
+/// staleness stay honest even when nothing upstream notifies.
+class PeriodicRebuild extends StatefulWidget {
+  const PeriodicRebuild({super.key, required this.builder, this.interval = const Duration(seconds: 30)});
+
+  final WidgetBuilder builder;
+  final Duration interval;
+
+  @override
+  State<PeriodicRebuild> createState() => _PeriodicRebuildState();
+}
+
+class _PeriodicRebuildState extends State<PeriodicRebuild> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(widget.interval, (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context);
+}
+
 class DeviceBatteryGroup extends StatelessWidget {
-  const DeviceBatteryGroup({super.key, required this.batteryLevel, required this.isCharging});
+  const DeviceBatteryGroup({
+    super.key,
+    required this.batteryLevel,
+    required this.isCharging,
+    this.updatedAt,
+    this.isConnected = true,
+    this.staleAfter = const Duration(minutes: 2),
+  });
 
   final int batteryLevel;
   final bool isCharging;
+
+  /// When the device last reported [batteryLevel]; null when unknown.
+  final DateTime? updatedAt;
+  final bool isConnected;
+  final Duration staleAfter;
+
+  bool get _isStale => !isConnected || updatedAt == null || DateTime.now().difference(updatedAt!) > staleAfter;
+
+  String? get _subtitle {
+    final at = updatedAt;
+    if (at == null) return isConnected ? null : 'Last known level';
+    if (!isConnected) return 'Last known level, reported ${formatAgo(at)}';
+    if (_isStale) return 'No update since ${formatAgo(at)}; reading may be stale';
+    return 'Updated ${formatAgo(at)}';
+  }
 
   FaIconData get _icon {
     if (batteryLevel > 75) return FontAwesomeIcons.batteryFull;
@@ -99,11 +166,12 @@ class DeviceBatteryGroup extends StatelessWidget {
     return OmiSettingsGroup(
       children: [
         OmiSettingsRow(
-          leading: isCharging
+          leading: isCharging && isConnected
               ? FaIcon(FontAwesomeIcons.chargingStation, color: OmiColors.success)
-              : FaIcon(_icon, color: _color),
-          title: isCharging ? context.l10n.charging : context.l10n.batteryLevel,
-          value: '$batteryLevel%',
+              : FaIcon(_icon, color: _isStale ? OmiColors.textTertiary : _color),
+          title: isCharging && isConnected ? context.l10n.charging : context.l10n.batteryLevel,
+          subtitle: _subtitle,
+          value: _isStale ? '~$batteryLevel%' : '$batteryLevel%',
         ),
       ],
     );
@@ -112,7 +180,10 @@ class DeviceBatteryGroup extends StatelessWidget {
 
 /// Shown instead of the device controls while the device is not connected.
 class DeviceDisconnectedCard extends StatelessWidget {
-  const DeviceDisconnectedCard({super.key});
+  const DeviceDisconnectedCard({super.key, this.lastConnectedAt, this.lastDisconnectedAt});
+
+  final DateTime? lastConnectedAt;
+  final DateTime? lastDisconnectedAt;
 
   @override
   Widget build(BuildContext context) {
@@ -137,6 +208,17 @@ class DeviceDisconnectedCard extends StatelessWidget {
             textAlign: TextAlign.center,
             style: OmiType.subhead.copyWith(color: OmiColors.textSecondary, height: 1.4),
           ),
+          if (lastDisconnectedAt != null || lastConnectedAt != null) ...[
+            const SizedBox(height: OmiSpacing.md),
+            Text(
+              key: const Key('device_last_seen'),
+              lastDisconnectedAt != null
+                  ? 'Last seen ${formatAgo(lastDisconnectedAt!)}'
+                  : 'Last connected ${formatAgo(lastConnectedAt!)}',
+              textAlign: TextAlign.center,
+              style: OmiType.caption.copyWith(color: OmiColors.textTertiary),
+            ),
+          ],
         ],
       ),
     );

@@ -62,7 +62,8 @@ class _BatteryInfoWidgetState extends State<BatteryInfoWidget> {
             final (batteryLevel, connectedDevice, pairedDevice, isConnecting, isCharging) = data;
             final l10n = context.l10n;
             if (connectedDevice != null) {
-              final hasBattery = batteryLevel > 0;
+              // -1 means "not read yet"; 0% is a real critical reading and must show.
+              final hasBattery = batteryLevel >= 0;
               final low = hasBattery && batteryLevel <= kLowBatteryPercent && !isCharging;
               final semantics = [
                 connectedDevice.name,
@@ -89,7 +90,7 @@ class _BatteryInfoWidgetState extends State<BatteryInfoWidget> {
                       fit: BoxFit.contain,
                     ),
                   ),
-                  // Only show battery indicator and percentage when battery level is valid (> 0)
+                  // Only show battery indicator and percentage once a level has been read (>= 0)
                   if (hasBattery) ...[
                     const SizedBox(width: 6.0),
                     // Battery only: a bar glyph, never a coloured dot (live status lives on the
