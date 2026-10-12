@@ -16,7 +16,9 @@ import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/backend/http/shared.dart';
 import 'package:omi/env/env.dart';
 import 'package:omi/providers/device_provider.dart';
+import 'package:omi/pages/settings/device/fork_phone_setup_section.dart';
 import 'package:omi/services/bridges/ble_bridge.dart';
+import 'package:omi/services/devices/fork_diagnostics_log.dart';
 import 'package:omi/utils/analytics/registry/events.g.dart';
 import 'package:omi/ui/ui.dart';
 import 'package:omi/utils/l10n_extensions.dart';
@@ -210,8 +212,19 @@ class _DeviceDiagnosticsState extends State<DeviceDiagnostics> {
     // Every step here can fail — temp dir, file write, and the share sheet
     // itself. Unhandled, the whole handler is silent and the button looks dead.
     final shareTitle = context.l10n.diagnosticsExportTitle;
+    // Fork-only: local share export carries the phone-side event log, phone
+    // setup and freshness timestamps (support upload stays upstream-shaped).
+    final provider = context.read<DeviceProvider>();
     try {
       final data = await _buildBundle();
+      data['fork'] = {
+        'battery_updated_at': provider.batteryUpdatedAt?.toUtc().toIso8601String(),
+        'last_connected_at': provider.lastConnectedAt?.toUtc().toIso8601String(),
+        'last_disconnected_at': provider.lastDisconnectedAt?.toUtc().toIso8601String(),
+        'is_connected': provider.isConnected,
+        'phone_setup': await ForkPhoneSetup.snapshot(),
+        'log': await ForkDiagnosticsLog.instance.readAll(),
+      };
       final json = const JsonEncoder.withIndent('  ').convert(data);
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/omi_diagnostics_${DateTime.now().millisecondsSinceEpoch}.json');
@@ -413,6 +426,8 @@ class _DeviceDiagnosticsState extends State<DeviceDiagnostics> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildRightNow(),
+                  const SizedBox(height: OmiSpacing.xl),
+                  const ForkPhoneSetupSection(),
                   const SizedBox(height: OmiSpacing.xl),
                   _buildWeek(),
                   const SizedBox(height: OmiSpacing.xl),
