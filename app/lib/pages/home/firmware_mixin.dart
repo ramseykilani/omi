@@ -15,6 +15,8 @@ import 'package:uuid/uuid.dart';
 import 'package:omi/backend/http/api/device.dart';
 import 'package:omi/backend/http/shared.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/services/devices/fork_diagnostics_log.dart';
+import 'package:omi/utils/firmware_update_verification.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/utils/device.dart';
 import 'package:omi/utils/analytics/firmware_update_telemetry.dart';
@@ -52,12 +54,44 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// state with the cause, Try Again and Contact Support instead of silently resetting.
   FirmwareUpdateFailure? updateFailure;
 
-  void _fail(FirmwareUpdateFailure failure) {
+  /// The raw error behind [updateFailure], shown as a technical detail line so a
+  /// failed OTA can be reported with something more specific than "failed".
+  String? updateFailureDetail;
+
+  int _lastLoggedProgressBucket = -1;
+
+  void _otaLog(String step, [Map<String, Object?> data = const {}]) {
+    ForkDiagnosticsLog.instance.record('ota', {'step': step, ...data});
+  }
+
+  /// DFU "success" only means the device acknowledged the upload and reset; the
+  /// version it reports after rebooting is checked on the next connect.
+  void _markInstalledPendingVerification(BtDevice btDevice) {
+    final target = latestFirmwareDetails['version']?.toString() ?? '';
+    _otaLog('reported_success', {'device': btDevice.id, 'from': btDevice.firmwareRevision, 'target': target});
+    if (target.isEmpty) return;
+    unawaited(FirmwareUpdateVerification.markPending(
+      deviceId: btDevice.id,
+      fromVersion: btDevice.firmwareRevision,
+      targetVersion: target,
+    ));
+  }
+
+  void _logProgress(int percent) {
+    final bucket = percent ~/ 10;
+    if (bucket == _lastLoggedProgressBucket) return;
+    _lastLoggedProgressBucket = bucket;
+    _otaLog('progress', {'percent': percent});
+  }
+
+  void _fail(FirmwareUpdateFailure failure, [Object? error]) {
+    _otaLog('failed', {'failure': failure.name, 'error': error?.toString()});
     if (!mounted) return;
     setState(() {
       isDownloading = false;
       isInstalling = false;
       updateFailure = failure;
+      updateFailureDetail = error?.toString();
     });
     Provider.of<DeviceProvider>(context, listen: false).resetFirmwareUpdateState();
   }
@@ -65,7 +99,10 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// Clears a previous failure before retrying.
   void clearFirmwareFailure() {
     if (updateFailure == null) return;
-    setState(() => updateFailure = null);
+    setState(() {
+      updateFailure = null;
+      updateFailureDetail = null;
+    });
   }
 
   late final mcumgr.FirmwareUpdateManagerFactory? managerFactory =
@@ -146,9 +183,18 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       return;
     }
     _firmwareTelemetry = FirmwareUpdateTelemetry.start(device: btDevice, protocol: 'mcumgr');
+    _lastLoggedProgressBucket = -1;
+    _otaLog('start', {
+      'protocol': 'mcumgr',
+      'device': btDevice.id,
+      'from': btDevice.firmwareRevision,
+      'target': latestFirmwareDetails['version']?.toString(),
+      'local_file': zipFilePath != null,
+    });
     setState(() {
       isInstalling = true;
       updateFailure = null;
+      updateFailureDetail = null;
     });
     await Provider.of<DeviceProvider>(context, listen: false).prepareDFU();
     await Future.delayed(const Duration(seconds: 2));
@@ -158,7 +204,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     if (!await file.exists()) {
       _firmwareTelemetry?.failed(failureClass: 'firmware_file_missing');
       Logger.debug('Firmware file not found: $firmwareFile');
-      _fail(FirmwareUpdateFailure.download);
+      _fail(FirmwareUpdateFailure.download, 'firmware file not found');
       return;
     }
     final bytes = await file.readAsBytes();
@@ -180,7 +226,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     } catch (e) {
       _firmwareTelemetry?.failed(failureClass: 'native_dfu_error');
       Logger.debug('update preparation failed: $e');
-      _fail(FirmwareUpdateFailure.install);
+      _fail(FirmwareUpdateFailure.install, e);
       return;
     }
 
@@ -192,10 +238,12 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     updateStream.listen(
       (state) {
         Logger.debug('update state: $state');
+        _otaLog('state', {'state': state.toString()});
         if (state != mcumgr.FirmwareUpgradeState.success) return;
         succeeded = true;
         _firmwareTelemetry?.completed(toVersion: latestFirmwareDetails['version']?.toString());
         Logger.debug('update success');
+        _markInstalledPendingVerification(btDevice);
         killMcuUpdateManager();
         if (!mounted) return;
         setState(() {
@@ -206,20 +254,22 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       onError: (Object error) {
         _firmwareTelemetry?.failed(failureClass: 'native_dfu_error');
         Logger.debug('update error: $error');
-        _fail(FirmwareUpdateFailure.install);
+        _fail(FirmwareUpdateFailure.install, error);
       },
       onDone: () {
         if (succeeded || !isInstalling) return;
         _firmwareTelemetry?.failed(failureClass: 'native_dfu_error');
-        _fail(FirmwareUpdateFailure.install);
+        _fail(FirmwareUpdateFailure.install, 'update stream closed before success (cancelled or link lost)');
       },
     );
 
     updateManager.progressStream.listen((progress) {
       Logger.debug('progress: $progress');
       if (!mounted) return;
+      final percent = (progress.bytesSent / progress.imageSize * 100).round();
+      _logProgress(percent);
       setState(() {
-        installProgress = (progress.bytesSent / progress.imageSize * 100).round();
+        installProgress = percent;
       });
     });
 
@@ -227,6 +277,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
         .where((log) => log.level.rawValue > 1) // Filter debug messages
         .listen((log) {
       Logger.debug('dfu log: ${log.message}');
+      if (log.level.rawValue >= 4) _otaLog('mcumgr_log', {'level': log.level.rawValue, 'message': log.message});
     });
 
     try {
@@ -234,7 +285,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     } catch (e) {
       _firmwareTelemetry?.failed(failureClass: 'native_dfu_error');
       Logger.debug('update start failed: $e');
-      _fail(FirmwareUpdateFailure.install);
+      _fail(FirmwareUpdateFailure.install, e);
     }
   }
 
@@ -243,9 +294,18 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       Logger.debug('Legacy firmware updates are unavailable in the Ray-Ban DAT build');
       return;
     }
+    _lastLoggedProgressBucket = -1;
+    _otaLog('start', {
+      'protocol': 'nordic_dfu',
+      'device': btDevice.id,
+      'from': btDevice.firmwareRevision,
+      'target': latestFirmwareDetails['version']?.toString(),
+      'local_file': zipFilePath != null,
+    });
     setState(() {
       isInstalling = true;
       updateFailure = null;
+      updateFailureDetail = null;
     });
     await Provider.of<DeviceProvider>(context, listen: false).prepareDFU();
     await Future.delayed(const Duration(seconds: 2));
@@ -265,6 +325,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       androidSpecialParameter: const AndroidSpecialParameter(packetReceiptNotificationsEnabled: true, rebootTime: 1000),
       onProgressChanged: (deviceAddress, percent, speed, avgSpeed, currentPart, partsTotal) {
         Logger.debug('deviceAddress: $deviceAddress, percent: $percent');
+        _logProgress(percent.toInt());
         if (!mounted) return;
         setState(() {
           installProgress = percent.toInt();
@@ -273,7 +334,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       onError: (deviceAddress, error, errorType, message) {
         _firmwareTelemetry?.failed(failureClass: 'native_dfu_error');
         Logger.debug('deviceAddress: $deviceAddress, error: $error, errorType: $errorType, message: $message');
-        _fail(FirmwareUpdateFailure.install);
+        _fail(FirmwareUpdateFailure.install, 'error=$error type=$errorType message=$message');
       },
       onDeviceConnecting: (deviceAddress) => Logger.debug('deviceAddress: $deviceAddress, onDeviceConnecting'),
       onDeviceConnected: (deviceAddress) => Logger.debug('deviceAddress: $deviceAddress, onDeviceConnected'),
@@ -284,6 +345,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       onDfuCompleted: (deviceAddress) {
         _firmwareTelemetry?.completed(toVersion: latestFirmwareDetails['version']?.toString());
         Logger.debug('deviceAddress: $deviceAddress, onDfuCompleted');
+        _markInstalledPendingVerification(btDevice);
         if (!mounted) return;
         setState(() {
           isInstalling = false;
@@ -335,7 +397,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     final zipUrl = latestFirmwareDetails['zip_url'];
     if (zipUrl == null) {
       Logger.debug('Error: zip_url is null in latestFirmwareDetails');
-      _fail(FirmwareUpdateFailure.download);
+      _fail(FirmwareUpdateFailure.download, 'zip_url missing from firmware details');
       return false;
     }
 
@@ -349,7 +411,13 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     });
 
     try {
+      _otaLog('download_start', {'url': zipUrl.toString(), 'target': latestFirmwareDetails['version']?.toString()});
       final r = await makeRawApiCall(method: 'GET', url: zipUrl);
+      // An error page saved as firmware.zip only fails later as a confusing
+      // "install" error; reject it here as the download failure it is.
+      if (r.statusCode < 200 || r.statusCode >= 300) {
+        throw HttpException('firmware download HTTP ${r.statusCode}');
+      }
       final completer = Completer<void>();
       final int? totalBytes = r.contentLength;
 
@@ -370,6 +438,10 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
         onDone: () async {
           try {
             Logger.debug('downloadPercentage: 100');
+            if (totalBytes != null && totalBytes > 0 && downloaded != totalBytes) {
+              throw HttpException('firmware download truncated: $downloaded of $totalBytes bytes');
+            }
+            _otaLog('download_done', {'bytes': downloaded});
             File file = File('$dir/firmware.zip');
             final Uint8List bytes = Uint8List(downloaded);
             int offset = 0;
@@ -400,7 +472,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       return true;
     } catch (e) {
       Logger.debug('Download error: $e');
-      _fail(FirmwareUpdateFailure.download);
+      _fail(FirmwareUpdateFailure.download, e);
       return false;
     }
   }

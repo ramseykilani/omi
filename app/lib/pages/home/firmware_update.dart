@@ -258,6 +258,15 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
                   textAlign: TextAlign.center,
                   style: OmiType.subhead.copyWith(color: OmiColors.textSecondary, height: 1.4),
                 ),
+                if (updateFailureDetail != null) ...[
+                  const SizedBox(height: OmiSpacing.md),
+                  SelectableText(
+                    updateFailureDetail!,
+                    key: const Key('firmware_update_failure_detail'),
+                    textAlign: TextAlign.center,
+                    style: OmiType.caption.copyWith(color: OmiColors.textTertiary),
+                  ),
+                ],
               ],
             ),
           ),
