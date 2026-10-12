@@ -1,0 +1,120 @@
+name: Fork device builds (APK + CV1 firmware drafts)
+
+# Personal-fork build lane. Builds on GitHub runners because the agent sandbox
+# that wrote these changes cannot reach Google Maven (dl.google.com).
+#
+# - ccr-5f9fd4e0-y9emw6           -> debug APK (prod flavor, api.omi.me)
+# - ccr-5f9fd4e0-y9emw6-firmware  -> CV1 firmware build (NOT for flashing yet)
+#
+# Artifacts appear on the run page (Actions tab) for 14 days.
+
+on:
+  push:
+    branches:
+      - ccr-5f9fd4e0-y9emw6
+      - ccr-5f9fd4e0-y9emw6-firmware
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-device-builds-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Debug APK (prod flavor)
+    if: github.ref_name == 'ccr-5f9fd4e0-y9emw6'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.5
+          cache: true
+
+      - name: Configure production client (public config only)
+        working-directory: app
+        run: |
+          # Committed, non-secret Firebase client config the store builds use.
+          bash scripts/install_release_firebase_config.sh
+          # Production API; sign-in goes through the backend's web auth flow
+          # (custom token), so no Google client secret is needed in the APK.
+          printf 'API_BASE_URL=https://api.omi.me/\nUSE_WEB_AUTH=true\nUSE_AUTH_CUSTOM_TOKEN=true\n' > .env
+          printf 'API_BASE_URL=\nUSE_WEB_AUTH=true\nUSE_AUTH_CUSTOM_TOKEN=true\n' > .dev.env
+          # Debug keystore committed for community builds.
+          cp setup/prebuilt/key.properties android/
+
+      - name: Generate code
+        working-directory: app
+        run: |
+          flutter pub get
+          dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build debug APK
+        working-directory: app
+        run: |
+          # Build number above the store's so firmware min_app_version_code
+          # gates never hide an OTA from this build.
+          flutter build apk --debug --flavor prod \
+            --build-name=1.0.600 --build-number=90000 \
+            --target-platform android-arm64
+          cp build/app/outputs/flutter-apk/app-prod-debug.apk "$RUNNER_TEMP/omi-fork-prod-debug.apk"
+          sha256sum "$RUNNER_TEMP/omi-fork-prod-debug.apk" | tee "$RUNNER_TEMP/omi-fork-prod-debug.apk.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: omi-fork-prod-debug-apk
+          path: |
+            ${{ runner.temp }}/omi-fork-prod-debug.apk
+            ${{ runner.temp }}/omi-fork-prod-debug.apk.sha256
+          retention-days: 14
+
+  firmware:
+    name: CV1 firmware drafts (build only, do not flash)
+    if: github.ref_name == 'ccr-5f9fd4e0-y9emw6-firmware'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # Same image the upstream release workflow pins.
+      CI_IMAGE: ghcr.io/zephyrproject-rtos/ci:v0.26.13@sha256:b0ac6334d1926cd0971a0a444f7adc6dd020e88ee3ce865aa070b6475a3ac4eb
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/cache@v6
+        with:
+          path: omi/firmware/v2.9.0
+          key: ncs-v2.9.0-${{ runner.os }}
+
+      - name: Build firmware (Docker)
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/omi/firmware:/omi/firmware" \
+            -e CMAKE_PREFIX_PATH=/opt/toolchains \
+            "$CI_IMAGE" \
+            bash /omi/firmware/scripts/ci/build-cv1.sh
+
+      - name: Stage artifacts
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" omi/firmware
+          OUT="$RUNNER_TEMP/cv1"
+          mkdir -p "$OUT"
+          B=omi/firmware/v2.9.0/build
+          cp "$B/dfu_application.zip" "$OUT/Omi_CV1_fork_drafts_OTA.zip"
+          cp "$B/merged.hex" "$B/merged_CPUNET.hex" "$OUT/"
+          (cd "$OUT" && sha256sum * > SHA256SUMS)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: omi-cv1-fork-firmware-drafts
+          path: ${{ runner.temp }}/cv1/
+          retention-days: 14
