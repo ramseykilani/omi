@@ -515,6 +515,12 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 #define BATTERY_REFRESH_INTERVAL_CONNECTED 5000     // 5 seconds
 #define BATTERY_REFRESH_INTERVAL_DISCONNECTED 10000 // 10 seconds
 #define CONFIG_OMI_BATTERY_CRITICAL_MV 3500         // mV
+/* Consecutive critical readings required before powering off. A single ADC
+ * burst taken during a radio/SD/haptic current spike can sag a small, aged
+ * LiPo below the threshold for a few ms; one such sample used to be enough to
+ * sys_poweroff() a device that still had usable charge. 3 readings = 15-30 s. */
+#define BATTERY_CRITICAL_CONSECUTIVE_READINGS 3
+static uint8_t battery_critical_count;
 uint8_t battery_percentage = 0;
 static int8_t charging_status_last_notified = -1;
 void broadcast_battery_level(struct k_work *work_item);
@@ -574,9 +580,21 @@ void broadcast_battery_level(struct k_work *work_item)
                 LOG_ERR("Error updating battery level: %d", err);
             }
         }
-        if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
-            LOG_WRN("Battery critical level reached (%d mV). Initiating shutdown.", battery_millivolt);
-            turnoff_all();
+        /* Never power off on low voltage while the charger is attached: the
+         * device would go dark (no charging LED) exactly when the user is
+         * trying to confirm it charges, and charging continues without us. */
+        if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV && !is_charging) {
+            battery_critical_count++;
+            LOG_WRN("Battery critical (%d mV), reading %u/%u",
+                    battery_millivolt,
+                    battery_critical_count,
+                    BATTERY_CRITICAL_CONSECUTIVE_READINGS);
+            if (battery_critical_count >= BATTERY_CRITICAL_CONSECUTIVE_READINGS) {
+                LOG_WRN("Battery critical level confirmed. Initiating shutdown.");
+                turnoff_all();
+            }
+        } else {
+            battery_critical_count = 0;
         }
     } else {
         LOG_ERR("Failed to read battery level");
