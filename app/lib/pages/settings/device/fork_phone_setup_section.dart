@@ -83,7 +83,7 @@ class _ForkPhoneSetupSectionState extends State<ForkPhoneSetupSection> {
           title: 'Background mode',
           subtitle: background || batch
               ? 'Link survives closing the app'
-              : 'Off: swiping the app away ends the link. Turn on under Settings > Recording.',
+              : 'Off: swiping the app away ends the link. Turn on under Settings > Recording & Transcription.',
           value: background ? 'On' : (batch ? 'Batch only' : 'Off'),
         ),
         if (Platform.isAndroid)
