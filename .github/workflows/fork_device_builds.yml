@@ -62,6 +62,10 @@ jobs:
 
       - name: Build debug APK
         working-directory: app
+        env:
+          # app/build.gradle treats any CI=... as Codemagic and expects its
+          # keystore env vars; empty CI selects the committed key.properties.
+          CI: ''
         run: |
           # Build number above the store's so firmware min_app_version_code
           # gates never hide an OTA from this build.
