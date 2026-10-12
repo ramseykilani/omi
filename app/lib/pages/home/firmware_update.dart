@@ -323,7 +323,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   }
 
   bool _batteryTooLow(DeviceProvider provider) =>
-      provider.batteryLevel > 0 && provider.batteryLevel < kFirmwareUpdateMinBattery && !provider.isCharging;
+      provider.batteryLevel >= 0 && provider.batteryLevel < kFirmwareUpdateMinBattery && !provider.isCharging;
 
   Widget _buildUpdateSection() {
     dynamic changelogData = latestFirmwareDetails['changelog'];
