@@ -13,6 +13,8 @@ on:
     branches:
       - ccr-5f9fd4e0-y9emw6
       - ccr-5f9fd4e0-y9emw6-firmware
+    paths-ignore:
+      - 'fork-notes/**'
   workflow_dispatch:
 
 permissions:

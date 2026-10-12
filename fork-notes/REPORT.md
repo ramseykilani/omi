@@ -215,7 +215,7 @@ The firmware version string is left at 3.0.21. If you ever flash a draft, the ap
 The APK could **not** be built inside this session. Its network policy blocks `dl.google.com`, which serves Google Maven (Android Gradle Plugin, androidx)
 and the Android SDK. Flutter 3.44.5 and an Android SDK were obtained some other way, and Dart code generation and analysis worked,
 but Gradle can't fetch AGP 8.11.1. So the APK is built on GitHub Actions by `.github/workflows/fork_device_builds.yml`
-on every push to the app branch. Download it from the run's **Artifacts** (`omi-fork-prod-debug-apk`). Manual build
+on every push to the app branch. **That build succeeds:** [run 38241744339](https://github.com/ramseykilani/omi/actions/runs/38241744339) produced artifact `omi-fork-prod-debug-apk` (~119 MB zip, expires 2026-10-26; re-run the workflow for a fresh one). Download it from the run's **Artifacts**. Manual build
 instructions are in `TEST_PLAN.md` §0.
 
 APK configuration: `prod` flavor (package `com.friend.ios`, same as the store app), production API `https://api.omi.me/`,
