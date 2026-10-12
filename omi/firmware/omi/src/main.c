@@ -21,6 +21,7 @@
 #endif
 #include <hal/nrf_reset.h>
 
+#include "diagnostics.h"
 #include "imu.h"
 #include "lib/core/sd_card.h"
 #include "rtc.h"
@@ -44,6 +45,7 @@ static void print_reset_reason(void)
 
     reas = nrf_reset_resetreas_get(NRF_RESET);
     nrf_reset_resetreas_clear(NRF_RESET, reas);
+    diagnostics_reset_reas = reas;
 
     if (reas & NRF_RESET_RESETREAS_DOG0_MASK) {
         printk("Reset by WATCHDOG\n");

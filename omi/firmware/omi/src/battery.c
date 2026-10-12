@@ -9,6 +9,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "diagnostics.h"
+
 LOG_MODULE_REGISTER(battery, CONFIG_LOG_DEFAULT_LEVEL);
 
 #define BATTERY_STATES_COUNT 16
@@ -131,6 +133,10 @@ uint8_t update_ema_filter(uint32_t current_ema, uint8_t new_value)
 
 static void battery_charging_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
+    /* pins == 0 is the synthetic call from battery_init(), not an edge. */
+    if (pins) {
+        diagnostics_charge_pin_edges++;
+    }
     int err = battery_charging_state_read();
     if (err) {
         LOG_ERR("Failed to read charging state (%d)", err);

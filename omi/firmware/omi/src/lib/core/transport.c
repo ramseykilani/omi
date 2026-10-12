@@ -23,6 +23,7 @@
 #include "accel.h"
 #include "button.h"
 #include "config.h"
+#include "diagnostics.h"
 #include "features.h"
 #include "haptic.h"
 #include "mic.h"
@@ -573,6 +574,10 @@ void broadcast_battery_level(struct k_work *work_item)
         battery_get_percentage(&battery_percentage, battery_millivolt) == 0) {
 
         LOG_PRINTK("Battery at %d mV (capacity %d%%)\n", battery_millivolt, battery_percentage);
+        diagnostics_battery_mv = battery_millivolt;
+        if (!is_charging) {
+            diagnostics_last_off_charger_mv = battery_millivolt;
+        }
 
         if (is_connected && current_connection != NULL) {
             /* Report battery even during an SD sync. It's 1 byte at most every few
@@ -1432,6 +1437,7 @@ int transport_start()
     bt_gatt_service_register(&settings_service);
     bt_gatt_service_register(&features_service);
     bt_gatt_service_register(&time_sync_service);
+    register_diagnostics_service();
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Register storage service for offline audio

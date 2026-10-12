@@ -15,6 +15,7 @@ file(GLOB app_sources
     src/settings.c
     src/feedback.c
     src/wdog_facade.c
+    src/diagnostics.c
     src/rtc.c
     src/imu.c
 )
