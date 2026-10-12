@@ -291,17 +291,25 @@ int main(void)
     activate_button_work();
 #endif
 
+    /* Failures below used to `return` from main(). Nothing then feeds the
+     * watchdog, so the SoC resets ~30 s later, re-runs the boot haptic, fails
+     * again: a buzz-every-30s reboot loop with BLE never started, so neither
+     * the app nor an OTA can reach the device. Continue degraded instead and
+     * keep BLE up; the error LED pattern still shows what failed. */
+    bool sd_ok = true;
+    bool codec_ok = true;
+
     // SD Card
     ret = app_sd_init();
     if (ret) {
-        LOG_ERR("Failed to initialize SD Card (err %d)", ret);
+        LOG_ERR("Failed to initialize SD Card (err %d), continuing without storage", ret);
         error_sd_card();
-        return ret;
+        sd_ok = false;
     }
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Initialize storage service for offline audio
-    ret = storage_init();
+    ret = sd_ok ? storage_init() : -ENODEV;
     if (ret) {
         LOG_ERR("Failed to initialize storage service (err %d)", ret);
         error_storage();
@@ -310,6 +318,7 @@ int main(void)
         LOG_INF("Storage service initialized");
     }
 #endif
+    (void) sd_ok;
 
     // Indicate transport initialization
     LOG_PRINTK("\n");
@@ -331,19 +340,20 @@ int main(void)
     set_codec_callback(codec_handler);
     ret = codec_start();
     if (ret) {
-        LOG_ERR("Failed to start codec: %d", ret);
+        LOG_ERR("Failed to start codec: %d, continuing without audio", ret);
         error_codec();
-        return ret;
+        codec_ok = false;
     }
 
-    // Initialize microphone
-    LOG_INF("Initializing microphone...\n");
-    set_mic_callback(mic_handler);
-    ret = mic_start();
-    if (ret) {
-        LOG_ERR("Failed to start microphone: %d", ret);
-        error_microphone();
-        return ret;
+    // Initialize microphone (pointless without a codec to feed)
+    if (codec_ok) {
+        LOG_INF("Initializing microphone...\n");
+        set_mic_callback(mic_handler);
+        ret = mic_start();
+        if (ret) {
+            LOG_ERR("Failed to start microphone: %d, continuing without audio", ret);
+            error_microphone();
+        }
     }
     // Hardware AAD (T5838) is started inside mic_start().
 
