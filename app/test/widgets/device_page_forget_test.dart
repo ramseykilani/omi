@@ -13,6 +13,12 @@ import 'package:omi/providers/device_provider.dart';
 /// A device provider with no BLE behind it: paired/connected devices are absent, so the page
 /// never reaches ServiceManager.
 class _StubDeviceProvider extends ChangeNotifier implements DeviceProvider {
+  @override
+  DateTime? batteryUpdatedAt;
+  @override
+  DateTime? lastConnectedAt;
+  @override
+  DateTime? lastDisconnectedAt;
   _StubDeviceProvider({required this.connected});
 
   final bool connected;

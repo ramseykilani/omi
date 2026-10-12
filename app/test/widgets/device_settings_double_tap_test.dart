@@ -13,6 +13,12 @@ import 'package:omi/pages/settings/device_settings.dart';
 import 'package:omi/providers/device_provider.dart';
 
 class _StubDeviceProvider extends ChangeNotifier implements DeviceProvider {
+  @override
+  DateTime? batteryUpdatedAt;
+  @override
+  DateTime? lastConnectedAt;
+  @override
+  DateTime? lastDisconnectedAt;
   _StubDeviceProvider({this.device, this.findResult = true, this.findCompleter});
 
   final BtDevice? device;
